@@ -151,6 +151,14 @@ namespace SmartFormat.Core.Parsing
 
         #endregion
 
+        bool _useBraceOpener = false;
+        char _braceOpener;
+        public void UseBraceOpener(char opener = '$')
+        {
+            _useBraceOpener = true;
+            _braceOpener = opener;
+        }
+
         #region: Parsing :
 
         public Format ParseFormat(string format, string[] formatterExtensionNames)
@@ -169,7 +177,8 @@ namespace SmartFormat.Core.Parsing
             // Cache properties:
             var openingBrace = _openingBrace;
             var closingBrace = _closingBrace;
-
+            var useBraceOpener = _useBraceOpener;
+            var braceOpener = _braceOpener;
 
             var nestedDepth = 0;
             var lastI = 0;
@@ -180,177 +189,242 @@ namespace SmartFormat.Core.Parsing
                 var c = format[i];
                 if (currentPlaceholder == null)
                 {
-                    if (c == openingBrace)
+                    if (useBraceOpener && current.parent == null)
                     {
-                        // Finish the last text item:
-                        if (i != lastI) current.Items.Add(new LiteralText(Settings, current, lastI) {endIndex = i});
-                        lastI = i + 1;
-
-                        // See if this brace should be escaped:
-                        if (!_alternativeEscaping)
+                        if (c == braceOpener)
                         {
+                            // Finish the last text item:
+                            if (i != lastI) current.Items.Add(new LiteralText(Settings, current, lastI) { endIndex = i });
+                            lastI = i + 1;
+
                             var nextI = lastI;
                             if (nextI < length && format[nextI] == openingBrace)
                             {
                                 i++;
-                                continue;
+                                lastI++;
                             }
-                        }
-
-                        // New placeholder:
-                        nestedDepth++;
-                        currentPlaceholder = new Placeholder(Settings, current, i, nestedDepth);
-                        current.Items.Add(currentPlaceholder);
-                        current.HasNested = true;
-                        operatorIndex = i + 1;
-                        selectorIndex = 0;
-                        namedFormatterStartIndex = -1;
-                    }
-                    else if (c == closingBrace)
-                    {
-                        // Finish the last text item:
-                        if (i != lastI)
-                            current.Items.Add(new LiteralText(Settings, current, lastI) {endIndex = i});
-                        lastI = i + 1;
-
-                        // See if this brace should be escaped:
-                        if (!_alternativeEscaping)
-                        {
-                            var nextI = lastI;
-                            if (nextI < length && format[nextI] == closingBrace)
+                            else
                             {
-                                i++;
+                                lastI = i;
                                 continue;
                             }
-                        }
 
-                        // Make sure that this is a nested placeholder before we un-nest it:
-                        if (current.parent == null)
+                            // New placeholder:
+                            nestedDepth++;
+                            currentPlaceholder = new Placeholder(Settings, current, i, nestedDepth);
+                            current.Items.Add(currentPlaceholder);
+                            current.HasNested = true;
+                            operatorIndex = i + 1;
+                            selectorIndex = 0;
+                            namedFormatterStartIndex = -1;
+                        }
+                        else if (c == CharLiteralEscapeChar && Settings.ConvertCharacterStringLiterals ||
+                                 _alternativeEscaping && c == _alternativeEscapeChar)
                         {
-                            parsingErrors.AddIssue(current, parsingErrorText[ParsingError.TooManyClosingBraces], i,
-                                i + 1);
-                            continue;
+                            namedFormatterStartIndex = -1;
+
+                            // See that is the next character
+                            var nextI = i + 1;
+
+                            // **** Alternative brace escaping with { or } following the escape character ****
+                            if (nextI < length && format[nextI] == braceOpener)
+                            {
+                                // Finish the last text item:
+                                if (i != lastI) current.Items.Add(new LiteralText(Settings, current, lastI) { endIndex = i });
+                                lastI = i + 1;
+
+                                i++;
+                            }
+                            else
+                            {
+                                // **** Escaping of charater literals like \t, \n, \v etc. ****
+
+                                // Finish the last text item:
+                                if (i != lastI) current.Items.Add(new LiteralText(Settings, current, lastI) { endIndex = i });
+                                lastI = i + 2;
+                                if (lastI > length) lastI = length;
+
+                                // Next add the character literal INCLUDING the escape character, which LiteralText will expect
+                                current.Items.Add(new LiteralText(Settings, current, i) { endIndex = lastI });
+
+                                i++;
+                            }
                         }
-
-                        // End of the placeholder's Format:
-                        nestedDepth--;
-                        current.endIndex = i;
-                        current.parent.endIndex = i + 1;
-                        current = current.parent.parent;
-                        namedFormatterStartIndex = -1;
                     }
-                    else if (c == CharLiteralEscapeChar && Settings.ConvertCharacterStringLiterals ||
-                             _alternativeEscaping && c == _alternativeEscapeChar)
+                    else
                     {
-                        namedFormatterStartIndex = -1;
-
-                        // See that is the next character
-                        var nextI = i + 1;
-
-                        // **** Alternative brace escaping with { or } following the escape character ****
-                        if (nextI < length && (format[nextI] == openingBrace || format[nextI] == closingBrace))
+                        if (c == openingBrace)
                         {
                             // Finish the last text item:
                             if (i != lastI) current.Items.Add(new LiteralText(Settings, current, lastI) {endIndex = i});
                             lastI = i + 1;
 
-                            i++;
-                        }
-                        else
-                        {
-                            // **** Escaping of charater literals like \t, \n, \v etc. ****
-
-                            // Finish the last text item:
-                            if (i != lastI) current.Items.Add(new LiteralText(Settings, current, lastI) {endIndex = i});
-                            lastI = i + 2;
-                            if (lastI > length) lastI = length;
-
-                            // Next add the character literal INCLUDING the escape character, which LiteralText will expect
-                            current.Items.Add(new LiteralText(Settings, current, i) {endIndex = lastI});
-
-                            i++;
-                        }
-                    }
-                    else if (namedFormatterStartIndex != -1)
-                    {
-                        if (c == '(')
-                        {
-                            var emptyName = namedFormatterStartIndex == i;
-                            if (emptyName)
+                            // See if this brace should be escaped:
+                            if (!_alternativeEscaping)
                             {
-                                namedFormatterStartIndex = -1;
+                                var nextI = lastI;
+                                if (nextI < length && format[nextI] == openingBrace)
+                                {
+                                    i++;
+                                    continue;
+                                }
+                            }
+
+                            // New placeholder:
+                            nestedDepth++;
+                            currentPlaceholder = new Placeholder(Settings, current, i, nestedDepth);
+                            current.Items.Add(currentPlaceholder);
+                            current.HasNested = true;
+                            operatorIndex = i + 1;
+                            selectorIndex = 0;
+                            namedFormatterStartIndex = -1;
+                        }
+                        else if (c == closingBrace)
+                        {
+                            // Finish the last text item:
+                            if (i != lastI)
+                                current.Items.Add(new LiteralText(Settings, current, lastI) {endIndex = i});
+                            lastI = i + 1;
+
+                            // See if this brace should be escaped:
+                            if (!_alternativeEscaping)
+                            {
+                                var nextI = lastI;
+                                if (nextI < length && format[nextI] == closingBrace)
+                                {
+                                    i++;
+                                    continue;
+                                }
+                            }
+
+                            // Make sure that this is a nested placeholder before we un-nest it:
+                            if (current.parent == null)
+                            {
+                                parsingErrors.AddIssue(current, parsingErrorText[ParsingError.TooManyClosingBraces], i,
+                                    i + 1);
                                 continue;
                             }
 
-                            namedFormatterOptionsStartIndex = i;
+                            // End of the placeholder's Format:
+                            nestedDepth--;
+                            current.endIndex = i;
+                            current.parent.endIndex = i + 1;
+                            current = current.parent.parent;
+                            namedFormatterStartIndex = -1;
                         }
-                        else if (c == ')' || c == ':')
+                        else if (c == CharLiteralEscapeChar && Settings.ConvertCharacterStringLiterals ||
+                                 _alternativeEscaping && c == _alternativeEscapeChar)
                         {
-                            if (c == ')')
+                            namedFormatterStartIndex = -1;
+
+                            // See that is the next character
+                            var nextI = i + 1;
+
+                            // **** Alternative brace escaping with { or } following the escape character ****
+                            if (nextI < length && (format[nextI] == openingBrace || format[nextI] == closingBrace))
                             {
-                                var hasOpeningParenthesis = namedFormatterOptionsStartIndex != -1;
+                                // Finish the last text item:
+                                if (i != lastI) current.Items.Add(new LiteralText(Settings, current, lastI) {endIndex = i});
+                                lastI = i + 1;
 
-                                // ensure no trailing chars past ')'
-                                var nextI = i + 1;
-                                var nextCharIsValid = nextI < format.Length &&
-                                                      (format[nextI] == ':' || format[nextI] == closingBrace);
+                                i++;
+                            }
+                            else
+                            {
+                                // **** Escaping of charater literals like \t, \n, \v etc. ****
 
-                                if (!hasOpeningParenthesis || !nextCharIsValid)
+                                // Finish the last text item:
+                                if (i != lastI) current.Items.Add(new LiteralText(Settings, current, lastI) {endIndex = i});
+                                lastI = i + 2;
+                                if (lastI > length) lastI = length;
+
+                                // Next add the character literal INCLUDING the escape character, which LiteralText will expect
+                                current.Items.Add(new LiteralText(Settings, current, i) {endIndex = lastI});
+
+                                i++;
+                            }
+                        }
+                        else if (namedFormatterStartIndex != -1)
+                        {
+                            if (c == '(')
+                            {
+                                var emptyName = namedFormatterStartIndex == i;
+                                if (emptyName)
                                 {
                                     namedFormatterStartIndex = -1;
                                     continue;
                                 }
 
-                                namedFormatterOptionsEndIndex = i;
-
-                                if (format[nextI] == ':') i++; // Consume the ':'
+                                namedFormatterOptionsStartIndex = i;
                             }
-
-                            var nameIsEmpty = namedFormatterStartIndex == i;
-                            var missingClosingParenthesis =
-                                namedFormatterOptionsStartIndex != -1 && namedFormatterOptionsEndIndex == -1;
-                            if (nameIsEmpty || missingClosingParenthesis)
+                            else if (c == ')' || c == ':')
                             {
+                                if (c == ')')
+                                {
+                                    var hasOpeningParenthesis = namedFormatterOptionsStartIndex != -1;
+
+                                    // ensure no trailing chars past ')'
+                                    var nextI = i + 1;
+                                    var nextCharIsValid = nextI < format.Length &&
+                                                          (format[nextI] == ':' || format[nextI] == closingBrace);
+
+                                    if (!hasOpeningParenthesis || !nextCharIsValid)
+                                    {
+                                        namedFormatterStartIndex = -1;
+                                        continue;
+                                    }
+
+                                    namedFormatterOptionsEndIndex = i;
+
+                                    if (format[nextI] == ':') i++; // Consume the ':'
+                                }
+
+                                var nameIsEmpty = namedFormatterStartIndex == i;
+                                var missingClosingParenthesis =
+                                    namedFormatterOptionsStartIndex != -1 && namedFormatterOptionsEndIndex == -1;
+                                if (nameIsEmpty || missingClosingParenthesis)
+                                {
+                                    namedFormatterStartIndex = -1;
+                                    continue;
+                                }
+
+
+                                lastI = i + 1;
+
+                                var parentPlaceholder = current.parent;
+
+                                if (namedFormatterOptionsStartIndex == -1)
+                                {
+                                    var formatterName = format.Substring(namedFormatterStartIndex,
+                                        i - namedFormatterStartIndex);
+
+                                    if (FormatterNameExists(formatterName, formatterExtensionNames))
+                                        parentPlaceholder.FormatterName = formatterName;
+                                    else
+                                        lastI = current.startIndex;
+                                }
+                                else
+                                {
+                                    var formatterName = format.Substring(namedFormatterStartIndex,
+                                        namedFormatterOptionsStartIndex - namedFormatterStartIndex);
+
+                                    if (FormatterNameExists(formatterName, formatterExtensionNames))
+                                    {
+                                        parentPlaceholder.FormatterName = formatterName;
+                                        parentPlaceholder.FormatterOptions = format.Substring(
+                                            namedFormatterOptionsStartIndex + 1,
+                                            namedFormatterOptionsEndIndex - (namedFormatterOptionsStartIndex + 1));
+                                    }
+                                    else
+                                    {
+                                        lastI = current.startIndex;
+                                    }
+                                }
+
+                                current.startIndex = lastI;
+
                                 namedFormatterStartIndex = -1;
-                                continue;
                             }
-
-
-                            lastI = i + 1;
-
-                            var parentPlaceholder = current.parent;
-
-                            if (namedFormatterOptionsStartIndex == -1)
-                            {
-                                var formatterName = format.Substring(namedFormatterStartIndex,
-                                    i - namedFormatterStartIndex);
-
-                                if (FormatterNameExists(formatterName, formatterExtensionNames))
-                                    parentPlaceholder.FormatterName = formatterName;
-                                else
-                                    lastI = current.startIndex;
-                            }
-                            else
-                            {
-                                var formatterName = format.Substring(namedFormatterStartIndex,
-                                    namedFormatterOptionsStartIndex - namedFormatterStartIndex);
-
-                                if (FormatterNameExists(formatterName, formatterExtensionNames))
-                                {
-                                    parentPlaceholder.FormatterName = formatterName;
-                                    parentPlaceholder.FormatterOptions = format.Substring(
-                                        namedFormatterOptionsStartIndex + 1,
-                                        namedFormatterOptionsEndIndex - (namedFormatterOptionsStartIndex + 1));
-                                }
-                                else
-                                {
-                                    lastI = current.startIndex;
-                                }
-                            }
-
-                            current.startIndex = lastI;
-
-                            namedFormatterStartIndex = -1;
                         }
                     }
                 }
@@ -460,6 +534,13 @@ namespace SmartFormat.Core.Parsing
         #endregion
 
         #region: Errors :
+
+        [Obsolete("Depreciated. Use the ParserErrorAction in Settings instead.", false)]
+        public ErrorAction ErrorAction
+        {
+            get => Settings.ParseErrorAction;
+            set => Settings.ParseErrorAction = value;
+        }
 
         public enum ParsingError
         {
